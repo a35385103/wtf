@@ -6,13 +6,9 @@ from transformers import (
 )
 import pyttsx3  # 用於文字轉語音 (Text to Speech) 的套件
 import speech_recognition as sr  # 用於語音轉文字 (Speech to Text) 的套件
-
-# ==============================
-# 一、定義後端商品清單 (menu)
-# ==============================
-menu = {
-    # 商品清單省略...
-}
+import re
+import json
+from menu import menu  # 匯入 menu
 
 # 範例：在 menu 外自行補充對應品項(若需要更精準的品項，可以自行再做對應或修改)
 price_per_apple = menu["item_11"]["price"] / 8  # 535 / 8 ~ 66.875
@@ -54,9 +50,6 @@ def speech_to_text():
 # ==============================
 # 四、使用 Llama 2 分析購買需求
 # ==============================
-import re
-import json
-
 def parse_order_with_llama2(user_input: str, pipe):
     system_prompt = """你是一個擅長解析語句的智慧助理。
 從使用者輸入中找出想購買的品項和數量，只能輸出 JSON 格式。
