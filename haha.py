@@ -1,252 +1,247 @@
-import torch
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    pipeline
-)
-import pyttsx3  # 用於文字轉語音 (Text to Speech) 的套件
-import speech_recognition as sr  # 用於語音轉文字 (Speech to Text) 的套件
-
-# ==============================
-# 一、定義後端商品清單 (menu)
-# ==============================
 import re
 import json
-from menu import menu  
+import torch
+import pyttsx3  # 文字轉語音
+import speech_recognition as sr  # 語音輸入
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# 範例：在 menu 外自行補充對應品項(若需要更精準的品項，可以自行再做對應或修改)
-# 假設「蘋果 (單顆)」對應商品：可以依照 item_11 內含 8 顆粗略計價
-price_per_apple = menu["item_11"]["price"] / 8  # 535 / 8 ~ 66.875
-# 假設「雞胸肉 (單塊)」每塊 70 元 (示範用)
-price_per_chicken_breast = 70
-
-# ==============================
-# 二、載入 Llama 2 模型 (示範)
-# ==============================
-print("[INFO] Loading Llama 2 Model...")
-
-# 1. 載入 Tokenizer
+###################################
+# 1. 模型初始化
+###################################
+print("[INFO] 正在載入 Llama3.x 模型...")
 tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-chat-hf")
 if tokenizer.pad_token is None:
-    tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-
-# 2. 載入模型
+    tokenizer.pad_token = tokenizer.eos_token
 model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-chat-hf")
-model.resize_token_embeddings(len(tokenizer))
 model.eval()
+print("[INFO] 模型載入完成！")
 
-# 3. 建立推論管線 (Pipeline)
-pipe = pipeline(
-    "text-generation",
-    model=model,
-    tokenizer=tokenizer,
-    device=torch.device("cpu"),  # 若有 GPU 可改成 "cuda:0"
-    max_length=512,
-    temperature=0.2,
-    do_sample=False
-)
+###################################
+# 2. 文字轉語音初始化
+###################################
+print("[INFO] 初始化文字轉語音引擎...")
+tts_engine = pyttsx3.init()
+tts_engine.setProperty("rate", 150)  # 調整語速
+tts_engine.setProperty("volume", 0.9)  # 調整音量
+print("[INFO] TTS 引擎初始化完成！")
 
-# ==============================
-# 三、語音輸入 (Speech to Text)
-# ==============================
-def parse_order_with_llama2(user_input: str, pipe):
-    system_prompt = """你是一個擅長解析語句的智慧助理。
-從使用者輸入中找出想購買的品項和數量，只能輸出 JSON 格式。
-下面是 JSON 回傳格式範例，請完整依照格式輸出，不要多餘說明：
+###################################
+# 3. 商品菜單與促銷資料
+###################################
+menu = {
+    # 商品清單略
+    "item_01": {"name": "蘋果",   "category": "fruit",     "price": 30,  "promotion": "buy1_get1_free"},
+    "item_02": {"name": "香蕉",   "category": "fruit",     "price": 25,  "promotion": None},
+    "item_03": {"name": "橙子",   "category": "fruit",     "price": 35,  "promotion": None},
+    "item_04": {"name": "草莓",   "category": "fruit",     "price": 40,  "promotion": None},
+    "item_05": {"name": "西瓜",   "category": "fruit",     "price": 50,  "promotion": None},
 
-{
-  "items": [
-    { "name": "蘋果", "quantity": 2 },
-    { "name": "雞胸肉", "quantity": 3 }
-  ]
+    # 蔬菜 (vegetable)
+    "item_06": {"name": "胡蘿蔔", "category": "vegetable", "price": 20,  "promotion": "buy1_get1_free"},
+    "item_07": {"name": "西蘭花", "category": "vegetable", "price": 30,  "promotion": None},
+    "item_08": {"name": "番茄",   "category": "vegetable", "price": 25,  "promotion": None},
+    "item_09": {"name": "萵苣",   "category": "vegetable", "price": 15,  "promotion": None},
+    "item_10": {"name": "馬鈴薯", "category": "vegetable", "price": 25,  "promotion": None},
+
+    # 肉類 (meat)
+    "item_11": {"name": "雞胸肉", "category": "meat",      "price": 70,  "promotion": "second_item_87_off"},
+    "item_12": {"name": "豬五花", "category": "meat",      "price": 60,  "promotion": "time_limited_65_off"},
+    "item_13": {"name": "牛肋眼", "category": "meat",      "price": 150, "promotion": None},
+    "item_14": {"name": "鮭魚排", "category": "meat",      "price": 120, "promotion": None},
+    "item_15": {"name": "羊肩排", "category": "meat",      "price": 180, "promotion": "90_percent_off"},
+
+    # 飲品 (drink)
+    "item_16": {"name": "礦泉水", "category": "drink",     "price": 15,  "promotion": None},
+    "item_17": {"name": "可樂",   "category": "drink",     "price": 20,  "promotion": None},
+    "item_18": {"name": "柳橙汁", "category": "drink",     "price": 30,  "promotion": None},
+    "item_19": {"name": "牛奶",   "category": "drink",     "price": 25,  "promotion": "buy1_get1_free"},
+    "item_20": {"name": "綠茶",   "category": "drink",     "price": 25,  "promotion": "second_item_87_off"},
+
+    # 零食 (snack)
+    "item_21": {"name": "洋芋片", "category": "snack",     "price": 40,  "promotion": "time_limited_65_off"},
+    "item_22": {"name": "巧克力", "category": "snack",     "price": 45,  "promotion": "90_percent_off"},
+    "item_23": {"name": "餅乾",   "category": "snack",     "price": 35,  "promotion": None},
+    "item_24": {"name": "爆米花", "category": "snack",     "price": 25,  "promotion": None},
+    "item_25": {"name": "軟糖",   "category": "snack",     "price": 30,  "promotion": None},
+
+    # 生活用品 (household)
+    "item_26": {"name": "衛生紙", "category": "household", "price": 40,  "promotion": None},
+    "item_27": {"name": "洗衣精", "category": "household", "price": 90,  "promotion": None},
+    "item_28": {"name": "洗碗精", "category": "household", "price": 45,  "promotion": None},
+    "item_29": {"name": "燈泡",   "category": "household", "price": 55,  "promotion": None},
+    "item_30": {"name": "洗髮精", "category": "household", "price": 60,  "promotion": "buy1_get1_free"}
 }
 
-如使用者沒有提到可解析的品項，就輸出：
-{
-  "items": []
-}
-切記：只能輸出上述 JSON，不能包含任何其他說明或文字。
-"""
+###################################
+# 4. 促銷規則
+###################################
+def promo_buy1_get1_free(qty, unit_price):
+    pay_qty = (qty + 1) // 2
+    return pay_qty * unit_price
 
-    user_prompt = f"使用者的輸入：{user_input}"
-    full_prompt = system_prompt.strip() + "\n\n" + user_prompt.strip()
-
-    response = pipe(
-        full_prompt,
-        max_new_tokens=256,
-        temperature=0.2,
-        do_sample=False
-    )
-
-    generated_text = response[0]["generated_text"]
-
-    match = re.search(r"\{[\s\S]+\}", generated_text)
-    if match:
-        json_str = match.group()
-        try:
-            result = json.loads(json_str)
-            return result
-        except json.JSONDecodeError:
-            return {"items": []}
-    else:
-        return {"items": []}
-
-# ==============================
-# 四、使用 Llama 2 分析購買需求
-# ==============================
-import re
-import json
-
-def parse_order_with_llama2(user_input: str, pipe):
-    """
-    使用 Llama 2 來解析「蘋果」與「雞胸肉」的數量，並回傳 JSON 格式的結果。
-    
-    - `pipe` 為已載入的 pipeline("text-generation", ...) 或其他可生成文本的推論函式。
-    - 回傳格式範例：
-      {
-        "items": [
-          {"name": "蘋果", "quantity": 2},
-          {"name": "雞胸肉", "quantity": 3}
-        ]
-      }
-    若沒成功擷取，或格式解析失敗，則回傳空的 { "items": [] }。
-    """
-
-    # ---- 系統指令 (system prompt) ----
-    system_prompt = """你是一個擅長解析語句的智慧助理。
-從使用者輸入中找出想購買的品項和數量，只能輸出 JSON 格式。
-想買的品項可能包含：蘋果、雞胸肉；也可能其他品項(請直接忽略)。
-下面是 JSON 回傳格式範例，請完整依照格式輸出，不要多餘說明：
-
-{
-  "items": [
-    { "name": "蘋果", "quantity": 2 },
-    { "name": "雞胸肉", "quantity": 3 }
-  ]
-}
-
-如使用者沒有提到可解析的品項，就輸出：
-{
-  "items": []
-}
-切記：只能輸出上述 JSON，不能包含任何其他說明或文字。
-"""
-
-    # ---- 使用者輸入 (user prompt) ----
-    user_prompt = f"使用者的輸入：{user_input}"
-
-    # ---- 組合要給模型的最終 Prompt ----
-    full_prompt = system_prompt.strip() + "\n\n" + user_prompt.strip()
-
-    # ---- 呼叫 Llama 2 進行推論 ----
-    response = pipe(
-        full_prompt,
-        max_new_tokens=256,
-        temperature=0.2,    # 溫度降低，避免生成亂碼
-        do_sample=False     # 關閉隨機抽樣，盡量取最可能的序列
-    )
-
-    # pipeline 回傳的結果通常是一個 list，內含一個 dict
-    # text-generation pipeline 的預設鍵值為 "generated_text"
-    generated_text = response[0]["generated_text"]
-
-    # ---- 嘗試透過 Regex 擷取 JSON ----
-    match = re.search(r"\{[\s\S]+\}", generated_text)
-    if match:
-        json_str = match.group()
-        # ---- 嘗試用 json.loads 解析 ----
-        try:
-            result = json.loads(json_str)
-            # 如果成功，直接回傳
-            return result
-        except json.JSONDecodeError:
-            # 解析失敗則回傳空結果
-            return {"items": []}
-    else:
-        # 如果模型沒輸出任何大括號包起來的內容
-        return {"items": []}
-
-# ==============================
-# 五、結算購物車
-# ==============================
-def calculate_cart(items_list):
-    """
-    根據 parse_order_with_llama2() 回傳的內容，
-    去匹配後端商品或用預設單價，計算總金額。
-    """
-    cart = []
+def promo_second_item_87_off(qty, unit_price):
     total = 0
-    
-    for item in items_list:
-        name = item["name"]
-        quantity = item["quantity"]
-        
-        # 依照 name 做對應計價 (示範)
-        # 蘋果 (單顆) : price_per_apple
-        # 雞胸肉 (單塊) : price_per_chicken_breast
-        if "蘋果" in name:
-            subtotal = price_per_apple * quantity
-            cart.append({"item_name": "蘋果(單顆)", "quantity": quantity, "subtotal": subtotal})
-            total += subtotal
-        elif "雞胸肉" in name:
-            subtotal = price_per_chicken_breast * quantity
-            cart.append({"item_name": "雞胸肉(單塊)", "quantity": quantity, "subtotal": subtotal})
-            total += subtotal
-        else:
-            # 其他情況: 目前示範不計價，或自行加上更多對應
-            cart.append({"item_name": name, "quantity": quantity, "subtotal": 0})
-    
-    return cart, total
+    for i in range(qty):
+        total += unit_price * (0.87 if i % 2 == 1 else 1)
+    return round(total, 2)
 
-# ==============================
-# 六、語音輸出 (Text to Speech)
-# ==============================
-def text_to_speech(text):
-    """
-    使用 pyttsx3 將文字轉成語音。
-    """
-    engine = pyttsx3.init()
-    # 可依需求設定說話速度、音量、音色等
-    engine.setProperty('rate', 150)
-    engine.say(text)
-    engine.runAndWait()
+promotion_algorithms = {
+    "buy1_get1_free": promo_buy1_get1_free,
+    "second_item_87_off": promo_second_item_87_off,
+}
 
-# ==============================
-# 七、主流程示範
-# ==============================
-if __name__ == "__main__":
-    # ----------------------------------------------
-    # 1) 從麥克風收音做語音轉文字
-    # ----------------------------------------------
-    # user_speech_text = speech_to_text()
-    #
-    # 這邊為了測試方便，直接用使用者給的範例字串：
-    user_speech_text = "我要蘋果2顆、雞胸肉3塊"
-
-    # ----------------------------------------------
-    # 2) 透過 Llama 2 解析欲購買品項與數量
-    # ----------------------------------------------
-    parse_result = parse_order_with_llama2(user_speech_text,pipe)
-    print("[INFO] Llama 2 解析結果：", parse_result)
-
-    # ----------------------------------------------
-    # 3) 建立購物車並計算總金額
-    # ----------------------------------------------
-    cart, total = calculate_cart(parse_result["items"])
-    print("[INFO] 購物車內容：", cart)
-    print("[INFO] 總金額：", total)
-
-    # ----------------------------------------------
-    # 4) 將結果語音輸出
-    # ----------------------------------------------
-    if cart:
-        cart_str_list = []
-        for c in cart:
-            cart_str_list.append(f"{c['item_name']} {int(c['quantity'])}個，小計 {int(c['subtotal'])}元")
-        cart_readout = "，".join(cart_str_list)
-        output_text = f"您的購物車有：{cart_readout}。總金額為 {int(total)} 元。"
+def calculate_price_with_promotion(item_id, quantity):
+    info = menu[item_id]
+    price = info["price"]
+    promo_type = info["promotion"]
+    if promo_type in promotion_algorithms:
+        return promotion_algorithms[promo_type](quantity, price)
     else:
-        output_text = "很抱歉，沒有辨識到任何可購買的品項。"
-    
-    print("[INFO] 語音播報：", output_text)
-    text_to_speech(output_text)
+        return price * quantity
+
+###################################
+# 5. Llama 模型解析用戶輸入
+###################################
+def llama_generate_text(prompt, max_length=256):
+    inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, max_length=max_length)
+    input_ids = inputs['input_ids'].to(model.device)
+    attention_mask = inputs['attention_mask'].to(model.device)
+    with torch.no_grad():
+        outputs = model.generate(
+            input_ids,
+            attention_mask=attention_mask,
+            max_length=max_length,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.9,
+            pad_token_id=tokenizer.pad_token_id
+        )
+    decoded_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    return decoded_output
+
+def parse_input_with_llama(user_input):
+    prompt = (
+        f"你是一個購物助理，請解析以下使用者輸入，並轉換為購買清單。\n"
+        "請確保輸出僅為 JSON 格式，例如：\n"
+        '[{"product": "商品名稱", "quantity": 商品數量}, {"product": "商品名稱", "quantity": 商品數量}]\n'
+        "不要添加任何額外解釋。\n"
+        f"輸入: \"{user_input}\"\n"
+    )
+    gen_text = llama_generate_text(prompt)
+    print(f"[DEBUG] 模型輸出: {gen_text}")
+
+    # 匹配所有 JSON 字串
+    matches = re.findall(r"\[.*?\]", gen_text, re.DOTALL)
+
+    for match in matches:
+        try:
+            print(f"[DEBUG] 嘗試解析的 JSON 字串: {match}")
+            json_str = match.replace("'", '"')
+            parsed_items = json.loads(json_str)
+            for item in parsed_items:
+                item["quantity"] = int(item["quantity"])  # 確保數量是整數
+            print(f"[DEBUG] 解析成功的 JSON: {parsed_items}")
+            return parsed_items  # 返回成功解析的 JSON 資料
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"[ERROR] JSON 解碼失敗，嘗試下一個: {e}")
+    print("[ERROR] 無法解析任何有效的 JSON 資料")
+    return []
+
+###################################
+# 6. 結帳邏輯
+###################################
+def convert_items_to_cart(parsed_items):
+    cart = {}
+    for item in parsed_items:
+        product_name = item.get("product")
+        quantity = item.get("quantity", 1)
+        for item_id, info in menu.items():
+            if info["name"] == product_name:
+                cart[item_id] = cart.get(item_id, 0) + quantity
+    return cart
+
+def checkout_cart(cart):
+    lines = []
+    total = 0
+    for item_id, qty in cart.items():
+        if item_id not in menu:
+            continue
+        info = menu[item_id]
+        subtotal = calculate_price_with_promotion(item_id, qty)
+        promo = info.get("promotion", "")
+        promo_str = f"({promo})" if promo else ""
+        subtotal = round(subtotal)
+        lines.append(f"{info['name']} x {qty} {promo_str} => 小計: {subtotal}")
+        total += subtotal
+    total = round(total)
+    lines.append(f"總金額：{total}")
+    return "\n".join(lines), total
+
+###################################
+# 7. 語音輸入功能
+###################################
+def get_audio_input():
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        print("請說話...")
+        tts_engine.say("請開始說話")
+        tts_engine.runAndWait()
+        try:
+            audio = recognizer.listen(source, timeout=15, phrase_time_limit=15)
+            text = recognizer.recognize_google(audio, language="zh-TW")
+            print(f"[語音輸入] 您說的是: {text}")
+            return text
+        except sr.UnknownValueError:
+            print("[ERROR] 無法識別語音，請再試一次。")
+            return ""
+        except sr.RequestError as e:
+            print(f"[ERROR] 語音服務出錯: {e}")
+            return ""
+        except sr.WaitTimeoutError:
+            print("[ERROR] 語音輸入超時，請再試一次。")
+            return ""
+
+###################################
+# 8. 主程式入口
+###################################
+def main():
+    print("=== 歡迎使用【Llama3.x + 促銷聊天機器人】 ===")
+    print("輸入範例: 我要蘋果2顆、雞胸肉3塊。")
+    print("輸入 'exit' 離開。")
+
+    while True:
+        mode = input("\n請選擇輸入模式 (1: 鍵盤輸入, 2: 語音輸入): ").strip()
+        if mode.lower() in ["exit", "quit"]:
+            print("感謝使用，再見！")
+            break
+
+        if mode == "1":
+            user_input = input("\n您: ").strip()
+        elif mode == "2":
+            user_input = get_audio_input().strip()
+        else:
+            print("[ERROR] 無效選項，請輸入 1 或 2。")
+            continue
+
+        if not user_input:
+            print("[ERROR] 無有效輸入，請再試一次。")
+            continue
+
+        parsed_items = parse_input_with_llama(user_input)
+        if not parsed_items:
+            reply = "抱歉，我無法理解您的輸入，請再試一次。"
+            print(f"機器人: {reply}")
+            tts_engine.say(reply)
+            tts_engine.runAndWait()
+            continue
+
+        cart = convert_items_to_cart(parsed_items)
+        detail_str, total_amount = checkout_cart(cart)
+
+        reply = f"購物清單如下：\n{detail_str}\n感謝您的購買！"
+        print(f"機器人: {reply}")
+        tts_engine.say(reply)
+        tts_engine.runAndWait()
+
+if __name__ == "__main__":
+    main()
